@@ -42,17 +42,35 @@ ACK/NACK bits**:
 - Read: `NODE_ADDR+W`, `REG_ADDR`, `NODE_ADDR+R`, `DATA_0..DATA_N`
   (both address-phase bytes are included, matching SMBus PEC convention)
 
-### Write validation (node-side, immediate NACK)
+### Write validation (node-side)
 
-The node computes the running CRC as each byte arrives. On receiving the
-final (PEC) byte, it immediately compares its own computed value against
-the received PEC:
+The node buffers the incoming write and computes CRC-8/SMBUS over
+`NODE_ADDR+W, REG_ADDR, DATA_0..DATA_N` as the bytes arrive, the same way
+the master does. Every byte is **ACKed as normal** — the node never
+signals a CRC failure via the ACK/NACK bit. This is a deliberate
+portability choice: it keeps the node implementable on top of a plain
+buffered receive callback (the common shape of I2C slave APIs/drivers
+across the AVR/RISC-V/Xtensa target range), with no dependency on a
+driver exposing per-byte ACK/NACK control.
 
-- **Match:** ACK the PEC byte as normal. The write is applied.
-- **Mismatch:** **NACK the PEC byte** instead of ACKing it, and discard
-  the entire write (registers retain their previous values). This gives
-  the master immediate, in-transaction feedback — no follow-up status
-  read is needed to discover a failed write.
+Once the PEC byte has been received, the node compares it against its own
+computed value:
+
+- **Match:** the write is applied.
+- **Mismatch:** the write is discarded (registers retain their previous
+  values) and `STATUS` is set to `1 (Error)` — the same mechanism already
+  used for an invalid `EP_SELECT` write (see
+  [Register Map §4.2](04-register-map.md#42-endpoint-access--ep_select-paging)).
+
+Because the node gives no in-band signal at write time, the master does
+not learn about a failed write immediately. It finds out the way it finds
+out about any other node-side fault: `STATUS` reads `Error` next time it's
+checked — during the routine
+[health-check cycle](03-enumeration.md#33-bus-scanning-cycles), or right
+away if the master chooses to read `STATUS` (or read back the register it
+just wrote) immediately after a write it considers critical (e.g.
+`SET_ADDR`, `RESTART`, `PLANT_UID`). That verification is a master-side
+policy choice — the protocol does not require it for every write.
 
 ### Read validation (master-side)
 
@@ -69,26 +87,34 @@ after the transaction completes:
 
 ## 5.4 Retry Policy
 
-On a detected integrity failure — a NACKed PEC on write, or a mismatched
-PEC on read — the master retries the **entire transaction** (not just the
-failed byte) from a fresh `START`, up to **3 attempts total**.
+Retry behavior differs between reads and writes, because only the master
+ever gets an in-transaction signal of a PEC failure (§5.3).
 
-If all 3 attempts fail:
+**Reads:** on a mismatched PEC, the master retries the **entire
+transaction** (not just the failed byte) from a fresh `START`, up to **3
+attempts total**. If all 3 attempts fail, the transaction is abandoned and
+counts as a failed attempt against that module in the
+[health-check cycle](03-enumeration.md#33-bus-scanning-cycles) — 3
+consecutive fully-failed transactions (i.e. `3×3 = 9` raw attempts) push
+the module to `PROBLEM` state under the existing state model, exactly as a
+response timeout would.
 
-- The transaction is abandoned.
-- This counts as a failed attempt against that module in the
-  [health-check cycle](03-enumeration.md#33-bus-scanning-cycles) — 3
-  consecutive fully-failed transactions (i.e. `3×3 = 9` raw attempts) push
-  the module to `PROBLEM` state under the existing state model, exactly
-  as a response timeout would. No separate error-counting mechanism is
-  introduced — CRC failures feed the same state machine as any other
-  communication fault.
+**Writes:** there is no immediate retry loop — the node doesn't NACK a bad
+PEC (§5.3), so the master has nothing to react to at write time. A write
+that fails its PEC check is silently discarded by the node and surfaces as
+`STATUS = Error` on the next read of `STATUS`, feeding the same `PROBLEM`
+classification as any other node-side fault. A master wanting a stronger
+delivery guarantee for a specific write is free to read back and re-issue
+it itself; the protocol does not require this for every write.
 
-This retry count is deliberately small: on a properly-terminated bus
-within the specified [electrical limits](01-electrical.md#bus-length--node-count-limits),
-CRC failures should be rare (transient noise), not systemic — a module
-that keeps failing after 3 clean retries has a real fault worth surfacing
-as `PROBLEM` rather than one worth retrying indefinitely.
+The 3-attempt read retry count is deliberately small: on a
+properly-terminated bus within the specified
+[electrical limits](01-electrical.md#bus-length--node-count-limits), CRC
+failures should be rare (transient noise), not systemic — a module that
+keeps failing after 3 clean retries has a real fault worth surfacing as
+`PROBLEM` rather than one worth retrying indefinitely. No separate
+error-counting mechanism is introduced anywhere in this section — CRC
+failures feed the same state machine as any other communication fault.
 
 ## 5.5 Example
 
@@ -104,5 +130,6 @@ Bytes on wire (excluding START/STOP/ACK bits):
 ```
 
 If the node's own computed CRC over `{0x54, 0x06, 0x01}` doesn't match
-`0xNN`, it NACKs the PEC byte and the restart is **not** applied — the
-master sees the NACK and retries per §5.4.
+`0xNN`, it ACKs the PEC byte as normal but discards the write and sets
+`STATUS = 1 (Error)` — the restart is **not** applied. The master only
+finds out if/when it reads `STATUS` (§5.3).
