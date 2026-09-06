@@ -17,6 +17,23 @@ consequences throughout this document, particularly for hot-plug recovery.
      Address (`0x08`)**.
    - Master reads `CLASS` and assigns a unique 7-bit I2C address by
      writing to the `SET_ADDR` register.
+   - The master **must wait at least 50ms** after the `SET_ADDR` write
+     before attempting to verify the module on its new address (reading
+     `PROT_VER` back — a write is never confirmed in-band, see
+     [Frame Format §5.3](05-frame-format.md#53-data-integrity--crcpec)).
+     A node is not guaranteed to be listening on its new address the
+     instant `SET_ADDR`'s bus transaction ends: reprogramming an I2C
+     peripheral's address is a sub-microsecond register write on simple
+     bare-metal targets (AVR/USI, CH32V003), but can involve tearing down
+     and recreating OS-level driver state on others (e.g. ESP-IDF's
+     `driver/i2c_slave.h`, measured at ~1ms worst case on ESP32-S3) — 50ms
+     gives comfortable margin above that without meaningfully slowing
+     enumeration, since it's paid once per newly-discovered module, not
+     per poll cycle. This wait must not block the master's other duties
+     (health-check/scan-for-new/full-range cycles, or anything else
+     sharing its main loop) — see `OgrMaster`'s non-blocking
+     pending-verification state in `ogr-main` for a reference
+     implementation.
    - Upon successful address assignment, the module pulls its `EN_OUT`
      (feeding the connector above it) to HIGH.
 4. **Chain Reaction:** The HIGH signal from module *N*'s top connector

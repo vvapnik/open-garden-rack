@@ -25,6 +25,7 @@ and be reviewed independently:
 | 5 | [Frame Format](docs/05-frame-format.md) | Byte order, transaction structure, CRC/PEC integrity, retry policy |
 | 6 | [Standard CLASS IDs](docs/06-class-ids.md) | Module class identifiers |
 | 7 | [Standard Type IDs](docs/07-type-ids.md) | Endpoint type/format identifiers |
+| 8 | [Reference Implementations](docs/08-libraries.md) | Public libraries implementing this spec |
 
 ## Contributing
 
