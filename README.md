@@ -27,6 +27,10 @@ and be reviewed independently:
 | 7 | [Standard Type IDs](docs/07-type-ids.md) | Endpoint type/format identifiers |
 | 8 | [Reference Implementations](docs/08-libraries.md) | Public libraries implementing this spec |
 
+A zoomable map of the spec and the libraries around it is in
+[`ARCHITECTURE.takesix.json`](ARCHITECTURE.takesix.json) (a TakeSix
+diagram).
+
 ## Contributing
 
 Issues and PRs should target the specific `docs/*.md` file(s) they affect.

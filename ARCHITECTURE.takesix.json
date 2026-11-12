@@ -1,0 +1,282 @@
+{
+  "takesix": "1.0",
+  "title": "OpenGardenRack spec",
+  "description": "I2C daisy-chain protocol for stacked garden modules: wires at the top, data at the bottom",
+  "blocks": [
+    {
+      "id": "physical",
+      "at": "B1:D1",
+      "icon": "🔌",
+      "title": "Physical layer",
+      "description": "12V + 5V-logic I2C, 5-pin plug",
+      "children": [
+        {
+          "id": "electrical",
+          "at": "A2:C3",
+          "icon": "⚡",
+          "title": "Electrical",
+          "description": "docs/01-electrical.md: rails, logic levels, bus speed, chain limits",
+          "details": "Source: `docs/01-electrical.md`\n\n- **Logic:** 5V on `SDA`, `SCL`, `EN`. 5V is *not* on the connector: each module regulates it from 12V.\n- **System power:** 12V for actuators (pumps, fans, LEDs). Common GND is mandatory.\n- **Bus speed:** fixed 100 kbps (Standard mode).\n- **Limits:** up to 3 m chain height and **12 modules** per electrical segment (400 pF budget, ~60 pF/m cable). Longer or denser chains need a bus buffer/repeater.\n- **Pull-ups:** 2.2 kΩ, only at the master."
+        },
+        {
+          "id": "connector",
+          "at": "E2:F3",
+          "icon": "🔗",
+          "title": "Connector",
+          "description": "docs/02-connector.md: 5 pins, two plugs",
+          "details": "Source: `docs/02-connector.md`\n\n- **Pins:** 1 `12V`, 2 `GND`, 3 `SDA`, 4 `SCL`, 5 `EN`.\n- Every module has **two connectors**: bottom carries `EN_IN`, top carries `EN_OUT`. Power and I2C pass straight through.\n- Consequence: removing a module disconnects everything stacked above it. Enumeration and hot-plug rules rely on this."
+        }
+      ]
+    },
+    {
+      "id": "enumeration",
+      "at": "B3:D3",
+      "icon": "🪜",
+      "title": "Enumeration",
+      "description": "Addresses in stack order",
+      "children": [
+        {
+          "id": "enum-boot",
+          "at": "A1:C2",
+          "icon": "▶",
+          "title": "Boot sequence",
+          "description": "§3.1: 0x08 → SET_ADDR → EN_OUT high",
+          "details": "Source: `docs/03-enumeration.md` §3.1\n\n1. All nodes hold `EN_OUT` low.\n2. Master raises `EN` for the bottom module.\n3. The enabled node answers on default address `0x08`; master reads `CLASS` and writes `SET_ADDR`.\n4. Master waits **≥50 ms**, then verifies by reading `PROT_VER` at the new address (non-blocking; see `OgrMaster` in `ogr-main`).\n5. Node raises `EN_OUT`, enabling the next module. Stops when nothing answers on `0x08`.\n\nRegistration order **is** physical order: the address itself carries no position."
+        },
+        {
+          "id": "enum-states",
+          "at": "D1:F2",
+          "icon": "◐",
+          "title": "Module states",
+          "description": "§3.2: UNASSIGNED, OK, PROBLEM, REMOVED",
+          "details": "Source: `docs/03-enumeration.md` §3.2\n\n- **UNASSIGNED** — answers on `0x08`; registration runs.\n- **OK** — answers on its address, `STATUS = 0`.\n- **PROBLEM** — ACKs but `STATUS ≠ 0`, or times out N times. Kept in the table.\n- **REMOVED** — NACK on the address K times. Address freed.\n\nPROBLEM vs REMOVED is exactly ACK-with-bad-content vs NACK-on-address."
+        },
+        {
+          "id": "enum-scans",
+          "at": "A4:C5",
+          "icon": "🔍",
+          "title": "Scan cycles",
+          "description": "§3.3: health, new on 0x08, full range",
+          "details": "Source: `docs/03-enumeration.md` §3.3\n\n- **Health-check** (frequent): read `STATUS` of every known address → REMOVED / PROBLEM.\n- **Scan-for-new** (frequent): only `0x08`, picks up hot-plugged or cascaded modules.\n- **Full-range** (rare, and always once at master start): finds orphaned modules that hold an address the master does not know."
+        },
+        {
+          "id": "enum-restart",
+          "at": "D4:F5",
+          "icon": "↻",
+          "title": "RESTART and orphans",
+          "description": "§3.4–3.6: cascade restarts, no adoption",
+          "details": "Source: `docs/03-enumeration.md` §3.4–3.6\n\n- `RESTART` makes a node forget its address and drop `EN_OUT`, so **everything above it** cascades back to UNASSIGNED. This is normal, not a fault.\n- **Orphan recovery:** the master restarts known modules from the top down until the orphan stops answering, then re-registers them in physical order. Adopting the orphan in place was rejected (ADR-0004).\n- **Known limitation:** a fully hung node looks like REMOVED; `RESTART` cannot reach it."
+        }
+      ]
+    },
+    {
+      "id": "frames",
+      "at": "B5:D5",
+      "icon": "✉",
+      "title": "Frame format",
+      "description": "Frames with CRC-8 PEC",
+      "children": [
+        {
+          "id": "frame-structure",
+          "at": "A2:C3",
+          "icon": "▤",
+          "title": "Transactions",
+          "description": "§5.1–5.2: register address, then data",
+          "details": "Source: `docs/05-frame-format.md` §5.1–5.2\n\n- Multi-byte values are **little-endian**.\n- Write: `START, ADDR+W, REG, DATA…, PEC, STOP`.\n- Read: `START, ADDR+W, REG, REPEATED START, ADDR+R, DATA…, PEC, STOP`.\n- 1 byte for most system registers, up to 4 for the data window."
+        },
+        {
+          "id": "frame-pec",
+          "at": "D2:F3",
+          "icon": "✔",
+          "title": "PEC and retries",
+          "description": "§5.3–5.4: CRC-8/SMBUS, 3 read tries",
+          "details": "Source: `docs/05-frame-format.md` §5.3–5.4\n\n- Every transaction ends with a **CRC-8/SMBUS** PEC (poly `0x07`, init `0x00`) over all bytes on the bus, both address bytes included.\n- **Writes:** the node ACKs everything; on a bad PEC it discards the write and sets `STATUS = Error`. No in-band failure signal.\n- **Reads:** on a bad PEC the master retries the whole transaction, 3 attempts. Three fully failed transactions push the module to PROBLEM."
+        }
+      ]
+    },
+    {
+      "id": "datamodel",
+      "at": "B6:D6",
+      "icon": "▦",
+      "title": "Register map and IDs",
+      "description": "Registers, class/type IDs",
+      "children": [
+        {
+          "id": "reg-system",
+          "at": "A1:C2",
+          "icon": "⚙",
+          "title": "System block",
+          "description": "§4.1: 0x00–0x1F, identity and control",
+          "details": "Source: `docs/04-register-map.md` §4.1\n\n- **0x00** `PROT_VER`, **0x01** `STATUS` (0 OK, 1 Error, 2 Busy), **0x02** `CLASS`, **0x03** `EP_COUNT`\n- **0x04** `SYS_FLAGS`: bit 0 `IS_ANCHOR`, bit 1 `HAS_BLUEPRINT`\n- **0x05** `SET_ADDR` (W), **0x06** `RESTART` (W: 1 soft, 2 hard)\n- **0x07–0x0A** `PLANT_UID` (uint32; anchors must persist it in NVS/EEPROM; `0xFFFFFFFF` = none)\n- **0x0B–0x0E** `BP_UID` blueprint ID\n- **0x0F** `EP_SELECT`\n- **0x10–0x1F** reserved"
+        },
+        {
+          "id": "reg-endpoints",
+          "at": "D1:F2",
+          "icon": "⇄",
+          "title": "Endpoints",
+          "description": "§4.2: EP_SELECT paging, 4-byte window",
+          "details": "Source: `docs/04-register-map.md` §4.2\n\n- Write an index to `EP_SELECT` (0x0F); default 0 after addressing or restart. Index ≥ `EP_COUNT` is ignored and sets `STATUS = Error`.\n- **0x20–0x22** descriptor of the selected endpoint: type ID, mode (R/W/RW), data format.\n- **0x40–0x43** data window, 4 bytes, little-endian; narrower values use the low bytes."
+        },
+        {
+          "id": "class-ids",
+          "at": "A4:C5",
+          "icon": "🏷",
+          "title": "CLASS IDs",
+          "description": "docs/06: what a module is",
+          "details": "Source: `docs/06-class-ids.md`\n\n- **0x01** Plant container (usually an anchor)\n- **0x02** Light\n- **0x03** Water supply\n- **0x04** Climate\n- **0xFF** Custom / unspecified"
+        },
+        {
+          "id": "type-ids",
+          "at": "D4:F5",
+          "icon": "🔢",
+          "title": "Type IDs",
+          "description": "docs/07: endpoint types and formats",
+          "details": "Source: `docs/07-type-ids.md`\n\n- **Sensors 0x40–0x7F:** moisture, temp (0.1 °C), humidity, light, weight, distance, water level\n- **Actuators 0x80–0xBF:** relay, dimmer, water valve, light switch, water pump, vibro\n- **Widgets 0xC0–0xFF:** camera (out-of-band stream)"
+        }
+      ]
+    },
+    {
+      "id": "implementations",
+      "at": "F3:F5",
+      "icon": "📚",
+      "title": "Libraries",
+      "description": "Other repos",
+      "children": [
+        {
+          "id": "impl-master",
+          "at": "A1:C2",
+          "icon": "👑",
+          "title": "ogr-main",
+          "description": "Master engine + ESP32 I2C transport",
+          "details": "Repository: github.com/vvapnik/ogr-main, locally `code/core/ogr-main`.\n\nRuns enumeration, scan cycles and orphan recovery from the head module. Target: ESP32 / S3 / C3."
+        },
+        {
+          "id": "impl-core",
+          "at": "D1:F2",
+          "icon": "⬡",
+          "title": "ogr-node-core",
+          "description": "Platform-independent node engine",
+          "details": "Repository: github.com/vvapnik/ogr-node-core, locally `code/core/ogr-node-core`.\n\nImplements the register map, `EP_SELECT`, PEC and the EN chain for a node. A HAL package plugs it into a concrete MCU."
+        },
+        {
+          "id": "impl-hals",
+          "at": "A4:F5",
+          "icon": "🧩",
+          "title": "Node HALs",
+          "description": "AVR, ESP32 Arduino, ESP32 IDF, CH32V003",
+          "details": "Source: `docs/08-libraries.md` (lists the public ones)\n\n- **ogr-node-hal-avr** — ATmega328 (TWI), ATtiny85 (USI). Public.\n- **ogr-node-hal-esp32-arduino** — ESP32 family on Arduino `Wire`. Public.\n- **ogr-node-hal-esp32** — ESP-IDF. Private.\n- **ogr-node-hal-ch32v003** — CH32V003. Private.\n\nAll libraries are AI-generated and hardware-tested, but not yet human-reviewed."
+        }
+      ]
+    },
+    {
+      "id": "rack",
+      "at": "E1:F1",
+      "icon": "🗄",
+      "title": "Example rack",
+      "description": "A sample stack",
+      "children": [
+        {
+          "id": "rack-plant3",
+          "at": "B1:E1",
+          "icon": "🪴",
+          "title": "Plant 3 · PLANT_UID 0x00000003",
+          "description": "Light above, pot below",
+          "children": [
+            {
+              "id": "rack-plant3-light",
+              "at": "B1:E2",
+              "icon": "💡",
+              "title": "Light module",
+              "description": "CLASS 0x02 Light, stack position 7",
+              "details": "- **CLASS:** `0x02` Light, `IS_ANCHOR = 0`\n- **Stack position:** 7 (registered right after the pot below it)\n- **Endpoints, for example:** `0x81` Dimmer (PWM), `0x43` Light sensor\n- `PLANT_UID` is optional for a non-anchor module; if unsupported it reads `0xFFFFFFFF`."
+            },
+            {
+              "id": "rack-plant3-pot",
+              "at": "B4:E5",
+              "icon": "🪴",
+              "title": "Pot module",
+              "description": "CLASS 0x01 anchor, PLANT_UID 0x00000003",
+              "details": "- **CLASS:** `0x01` Plant container, `IS_ANCHOR = 1`\n- **PLANT_UID:** `0x00000003`, stored in NVS/EEPROM so the plant keeps its identity across restarts\n- **Stack position:** 6\n- **Endpoints, for example:** `0x40` Moisture, `0x82` Water valve"
+            }
+          ]
+        },
+        {
+          "id": "rack-plant2",
+          "at": "B2:E2",
+          "icon": "🪴",
+          "title": "Plant 2 · PLANT_UID 0x00000002",
+          "description": "Light above, pot below",
+          "children": [
+            {
+              "id": "rack-plant2-light",
+              "at": "B1:E2",
+              "icon": "💡",
+              "title": "Light module",
+              "description": "CLASS 0x02 Light, stack position 5",
+              "details": "- **CLASS:** `0x02` Light, `IS_ANCHOR = 0`\n- **Stack position:** 5 (registered right after the pot below it)\n- **Endpoints, for example:** `0x81` Dimmer (PWM), `0x43` Light sensor\n- `PLANT_UID` is optional for a non-anchor module; if unsupported it reads `0xFFFFFFFF`."
+            },
+            {
+              "id": "rack-plant2-pot",
+              "at": "B4:E5",
+              "icon": "🪴",
+              "title": "Pot module",
+              "description": "CLASS 0x01 anchor, PLANT_UID 0x00000002",
+              "details": "- **CLASS:** `0x01` Plant container, `IS_ANCHOR = 1`\n- **PLANT_UID:** `0x00000002`, stored in NVS/EEPROM so the plant keeps its identity across restarts\n- **Stack position:** 4\n- **Endpoints, for example:** `0x40` Moisture, `0x82` Water valve"
+            }
+          ]
+        },
+        {
+          "id": "rack-plant1",
+          "at": "B3:E3",
+          "icon": "🪴",
+          "title": "Plant 1 · PLANT_UID 0x00000001",
+          "description": "Light above, pot below",
+          "children": [
+            {
+              "id": "rack-plant1-light",
+              "at": "B1:E2",
+              "icon": "💡",
+              "title": "Light module",
+              "description": "CLASS 0x02 Light, stack position 3",
+              "details": "- **CLASS:** `0x02` Light, `IS_ANCHOR = 0`\n- **Stack position:** 3 (registered right after the pot below it)\n- **Endpoints, for example:** `0x81` Dimmer (PWM), `0x43` Light sensor\n- `PLANT_UID` is optional for a non-anchor module; if unsupported it reads `0xFFFFFFFF`."
+            },
+            {
+              "id": "rack-plant1-pot",
+              "at": "B4:E5",
+              "icon": "🪴",
+              "title": "Pot module",
+              "description": "CLASS 0x01 anchor, PLANT_UID 0x00000001",
+              "details": "- **CLASS:** `0x01` Plant container, `IS_ANCHOR = 1`\n- **PLANT_UID:** `0x00000001`, stored in NVS/EEPROM so the plant keeps its identity across restarts\n- **Stack position:** 2\n- **Endpoints, for example:** `0x40` Moisture, `0x82` Water valve"
+            }
+          ]
+        },
+        {
+          "id": "rack-tank",
+          "at": "B4:E5",
+          "icon": "💧",
+          "title": "Water tank",
+          "description": "CLASS 0x03 Water Supply, bottom of the stack",
+          "details": "- **CLASS:** `0x03` Water supply, `IS_ANCHOR = 0`\n- **Stack position:** 1 — the master enables it first, so it gets the first address\n- **Endpoints, for example:** `0x84` Water pump, `0x46` Water level\n- Sits at the bottom: every module above it gets power, I2C and `EN` through it."
+        }
+      ]
+    }
+  ],
+  "links": [
+    {
+      "from": "physical",
+      "to": "enumeration",
+      "label": "EN chain"
+    },
+    {
+      "from": "enumeration",
+      "to": "frames",
+      "label": "uses"
+    },
+    {
+      "from": "implementations",
+      "to": "enumeration",
+      "label": "implement",
+      "style": "dashed"
+    }
+  ]
+}
