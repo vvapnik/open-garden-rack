@@ -34,6 +34,5 @@ diagram).
 ## Contributing
 
 Issues and PRs should target the specific `docs/*.md` file(s) they affect.
-Any change to enumeration behavior, register layout, or addressing must be
-accompanied by an ADR in `decisions/` explaining the rationale and any
-alternatives considered.
+A PR that changes enumeration behavior, register layout, or addressing must
+explain the rationale and any alternatives considered in its description.

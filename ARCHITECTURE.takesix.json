@@ -65,7 +65,7 @@
           "icon": "↻",
           "title": "RESTART and orphans",
           "description": "§3.4–3.6: cascade restarts, no adoption",
-          "details": "Source: `docs/03-enumeration.md` §3.4–3.6\n\n- `RESTART` makes a node forget its address and drop `EN_OUT`, so **everything above it** cascades back to UNASSIGNED. This is normal, not a fault.\n- **Orphan recovery:** the master restarts known modules from the top down until the orphan stops answering, then re-registers them in physical order. Adopting the orphan in place was rejected (ADR-0004).\n- **Known limitation:** a fully hung node looks like REMOVED; `RESTART` cannot reach it."
+          "details": "Source: `docs/03-enumeration.md` §3.4–3.6\n\n- `RESTART` makes a node forget its address and drop `EN_OUT`, so **everything above it** cascades back to UNASSIGNED. This is normal, not a fault.\n- **Orphan recovery:** the master restarts known modules from the top down until the orphan stops answering, then re-registers them in physical order. Adopting the orphan in place was rejected: an address without a known position is useless.\n- **Known limitation:** a fully hung node looks like REMOVED; `RESTART` cannot reach it."
         }
       ]
     },

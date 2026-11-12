@@ -148,8 +148,9 @@ at that address. Instead:
 
 In-place "adoption" of an orphaned address (reading its registers directly
 and inserting it into the table without forcing it through the EN cascade)
-was considered and explicitly rejected — see
-[ADR-0004](../decisions/0004-orphan-module-recovery.md) for the rationale.
+was considered and explicitly rejected: an address with no known physical
+position is useless in a protocol whose addressing model is built on
+stacking order (see 3.3), and only the EN cascade restores that position.
 
 ## 3.6 Known limitation
 
